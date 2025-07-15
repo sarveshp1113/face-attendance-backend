@@ -12,20 +12,53 @@ import csv
 from datetime import datetime
 import requests
 import json
+from io import StringIO
 
 app = Flask(__name__)
 
 # GitHub configuration (replace with your details)
-GITHUB_REPO = "sarveshp1113/face-attendance-encodings"
-GITHUB_TOKEN = "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"
+GITHUB_REPO = "<your-username>/face-attendance-encodings"
+GITHUB_TOKEN = "<your-github-personal-access-token>"
 GITHUB_ENCODED_DIR = "known_faces"
-ATTENDANCE_FILE = "/app/attendance.csv"  # Render's persistent disk
+ATTENDANCE_FILE = "attendance.csv"  # In-memory file, synced with GitHub
 
-# Initialize attendance CSV
-if not os.path.exists(ATTENDANCE_FILE):
-    with open(ATTENDANCE_FILE, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["Name", "Date", "Time"])
+# In-memory attendance storage
+attendance_records = [["Name", "Date", "Time"]]
+
+# Load attendance.csv from GitHub on startup
+def load_attendance_from_github():
+    global attendance_records
+    headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+    response = requests.get(f"https://api.github.com/repos/{GITHUB_REPO}/contents/{ATTENDANCE_FILE}", headers=headers)
+    if response.status_code == 200:
+        content = base64.b64decode(response.json()["content"]).decode("utf-8")
+        attendance_records = [row for row in csv.reader(StringIO(content)) if row]
+    else:
+        attendance_records = [["Name", "Date", "Time"]]  # Initialize if file doesn't exist
+
+# Save attendance.csv to GitHub
+def save_attendance_to_github():
+    headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+    output = StringIO()
+    writer = csv.writer(output)
+    for row in attendance_records:
+        writer.writerow(row)
+    encoded_data = base64.b64encode(output.getvalue().encode("utf-8")).decode("utf-8")
+    
+    # Check if file exists
+    response = requests.get(f"https://api.github.com/repos/{GITHUB_REPO}/contents/{ATTENDANCE_FILE}", headers=headers)
+    sha = response.json().get("sha") if response.status_code == 200 else None
+    
+    # Create or update file
+    data = {
+        "message": "Update attendance.csv",
+        "content": encoded_data,
+        "branch": "main"
+    }
+    if sha:
+        data["sha"] = sha
+    response = requests.put(f"https://api.github.com/repos/{GITHUB_REPO}/contents/{ATTENDANCE_FILE}", headers=headers, json=data)
+    return response.status_code == 201 or response.status_code == 200
 
 # Load known face encodings from GitHub
 def load_known_faces():
@@ -48,7 +81,7 @@ def load_known_faces():
 def save_encoding_to_github(name, encoding):
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
     file_path = f"{GITHUB_ENCODED_DIR}/{name}.pkl"
-    encoded_data = base64.b64encode(pickle.dumps(encoding)).decode('utf-8')
+    encoded_data = base64.b64encode(pickle.dumps(encoding)).decode("utf-8")
     
     # Check if file exists
     response = requests.get(f"https://api.github.com/repos/{GITHUB_REPO}/contents/{file_path}", headers=headers)
@@ -74,16 +107,19 @@ def decode_image(base64_string):
 
 # Mark attendance
 def mark_attendance(name):
+    global attendance_records
     today = datetime.now().strftime("%Y-%m-%d")
-    with open(ATTENDANCE_FILE, "r") as f:
-        reader = csv.reader(f)
-        for row in reader:
-            if len(row) >= 2 and row[0] == name and row[1] == today:
-                return False, f"{name} already marked for today."
-    with open(ATTENDANCE_FILE, "a", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow([name, today, datetime.now().strftime("%H:%M:%S")])
+    for row in attendance_records[1:]:  # Skip header
+        if len(row) >= 2 and row[0] == name and row[1] == today:
+            return False, f"{name} already marked for today."
+    attendance_records.append([name, today, datetime.now().strftime("%H:%M:%S")])
+    success = save_attendance_to_github()
+    if not success:
+        return False, "Failed to save attendance to GitHub."
     return True, f"Attendance marked for {name}"
+
+# Load attendance on startup
+load_attendance_from_github()
 
 @app.route("/register", methods=["POST"])
 def register():
@@ -140,10 +176,9 @@ def attendance():
 
 @app.route("/get-attendance", methods=["GET"])
 def get_attendance():
-    with open(ATTENDANCE_FILE, "r") as f:
-        reader = csv.reader(f)
-        records = list(reader)
-    return jsonify(records)
+    global attendance_records
+    load_attendance_from_github()  # Refresh from GitHub
+    return jsonify(attendance_records)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
