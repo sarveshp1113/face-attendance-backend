@@ -17,8 +17,8 @@ from io import StringIO
 app = Flask(__name__)
 
 # GitHub configuration (replace with your details)
-GITHUB_REPO = "<your-username>/face-attendance-encodings"
-GITHUB_TOKEN = "<your-github-personal-access-token>"
+GITHUB_REPO = "sarveshp1113/face-attendance-encodings"
+GITHUB_TOKEN = "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"
 GITHUB_ENCODED_DIR = "known_faces"
 ATTENDANCE_FILE = "attendance.csv"  # In-memory file, synced with GitHub
 
